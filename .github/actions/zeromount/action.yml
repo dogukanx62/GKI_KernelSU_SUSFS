@@ -113,25 +113,58 @@ runs:
         PATCH_FILE="${PATCH_DIR}/51_enhanced_susfs-android14-6.1.patch"
 
         test -f "$PATCH_FILE" || {
-          echo "::error::51 Enhanced SUSFS patch bulunamadı."
+          echo "::error::Enhanced SUSFS patch bulunamadı: $PATCH_FILE"
           exit 1
         }
 
-        # Daha önce uygulanıp uygulanmadığını kontrol et.
-        if grep -q "config KSU_SUSFS_SUS_KSTAT_REDIRECT" fs/Kconfig &&
-           grep -q "config KSU_SUSFS_UNICODE_FILTER" fs/Kconfig; then
-          echo "Enhanced SUSFS özellikleri zaten mevcut; 51 patch atlanıyor."
-        else
-          echo "Testing Enhanced SUSFS patch..."
-
-          if ! patch --dry-run --batch --forward -p1 < "$PATCH_FILE"; then
-            echo "::error::51 Enhanced SUSFS patch mevcut SUSFS sürümüyle uyuşmuyor."
-            echo "::error::Super-Builders 50 patchi ile mevcut SUSFS patchi farklı olabilir."
-            exit 1
-          fi
-
-          patch --batch --forward -p1 < "$PATCH_FILE"
+        if grep -Eq \
+             '^[[:space:]]*config[[:space:]]+KSU_SUSFS_SUS_KSTAT_REDIRECT' \
+             fs/Kconfig &&
+           grep -Eq \
+             '^[[:space:]]*config[[:space:]]+KSU_SUSFS_UNICODE_FILTER' \
+             fs/Kconfig; then
+          echo "Enhanced SUSFS daha önce uygulanmış."
+          exit 0
         fi
+
+        echo "Checking Enhanced SUSFS patch compatibility..."
+
+        if ! patch \
+          --dry-run \
+          --batch \
+          --forward \
+          -p1 < "$PATCH_FILE"; then
+
+          echo "::error::51_enhanced_susfs patchi mevcut SUSFS kaynaklarıyla uyuşmadı."
+
+          echo "Current SUSFS information:"
+          grep -n \
+            "SUSFS_VERSION\|SUSFS_VARIANT" \
+            fs/susfs.c \
+            include/linux/susfs.h \
+            2>/dev/null || true
+
+          find . -name '*.rej' -print || true
+          exit 1
+        fi
+
+        patch --batch --forward -p1 < "$PATCH_FILE"
+
+        grep -Eq \
+          '^[[:space:]]*config[[:space:]]+KSU_SUSFS_SUS_KSTAT_REDIRECT' \
+          fs/Kconfig || {
+            echo "::error::KSTAT_REDIRECT Kconfig girdisi eklenmedi."
+            exit 1
+          }
+
+        grep -Eq \
+          '^[[:space:]]*config[[:space:]]+KSU_SUSFS_UNICODE_FILTER' \
+          fs/Kconfig || {
+            echo "::error::UNICODE_FILTER Kconfig girdisi eklenmedi."
+            exit 1
+          }
+
+        echo "Enhanced SUSFS patch applied successfully."
 
     - name: Check KernelSU-Next SUSFS integration
       shell: bash
