@@ -1,0 +1,246 @@
+name: Apply KernelSU-Next ZeroMount
+description: Apply Super-Builders Enhanced SUSFS and ZeroMount patches
+
+inputs:
+  version:
+    description: Kernel version, for example android14-6.1
+    required: true
+
+  sublevel:
+    description: Kernel sublevel
+    required: true
+
+  super_builders_ref:
+    description: Super-Builders branch, tag or commit
+    required: false
+    default: main
+
+runs:
+  using: composite
+
+  steps:
+    - name: Download Super-Builders patches
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [[ "${{ inputs.version }}" != "android14-6.1" ]]; then
+          echo "::error::ZeroMount action currently supports only android14-6.1"
+          exit 1
+        fi
+
+        if [[ "${{ inputs.sublevel }}" != "145" ]]; then
+          echo "::error::This workflow configuration is restricted to kernel 6.1.145"
+          exit 1
+        fi
+
+        PATCH_ROOT="${RUNNER_TEMP}/Super-Builders"
+        rm -rf "$PATCH_ROOT"
+
+        git clone \
+          --depth=1 \
+          --branch "${{ inputs.super_builders_ref }}" \
+          https://github.com/Enginex0/Super-Builders.git \
+          "$PATCH_ROOT"
+
+        echo "SUPER_BUILDERS_DIR=$PATCH_ROOT" >> "$GITHUB_ENV"
+
+    - name: Check existing SUSFS integration
+      shell: bash
+      working-directory: ${{ github.workspace }}/kernel/common
+      run: |
+        set -euo pipefail
+
+        test -f fs/susfs.c || {
+          echo "::error::fs/susfs.c bulunamadı. SUSFS adımı ZeroMount'tan önce çalışmalıdır."
+          exit 1
+        }
+
+        test -f include/linux/susfs.h || {
+          echo "::error::include/linux/susfs.h bulunamadı."
+          exit 1
+        }
+
+        grep -q "config KSU_SUSFS" fs/Kconfig || {
+          echo "::error::SUSFS Kconfig entegrasyonu bulunamadı."
+          exit 1
+        }
+
+    - name: Apply Enhanced SUSFS patch
+      shell: bash
+      working-directory: ${{ github.workspace }}/kernel/common
+      run: |
+        set -euo pipefail
+
+        PATCH_DIR="${SUPER_BUILDERS_DIR}/android14-6.1/KernelSU-Next/patches"
+        PATCH_FILE="${PATCH_DIR}/51_enhanced_susfs-android14-6.1.patch"
+
+        test -f "$PATCH_FILE" || {
+          echo "::error::51 Enhanced SUSFS patch bulunamadı."
+          exit 1
+        }
+
+        # Daha önce uygulanıp uygulanmadığını kontrol et.
+        if grep -q "config KSU_SUSFS_SUS_KSTAT_REDIRECT" fs/Kconfig &&
+           grep -q "config KSU_SUSFS_UNICODE_FILTER" fs/Kconfig; then
+          echo "Enhanced SUSFS özellikleri zaten mevcut; 51 patch atlanıyor."
+        else
+          echo "Testing Enhanced SUSFS patch..."
+
+          if ! patch --dry-run --batch --forward -p1 < "$PATCH_FILE"; then
+            echo "::error::51 Enhanced SUSFS patch mevcut SUSFS sürümüyle uyuşmuyor."
+            echo "::error::Super-Builders 50 patchi ile mevcut SUSFS patchi farklı olabilir."
+            exit 1
+          fi
+
+          patch --batch --forward -p1 < "$PATCH_FILE"
+        fi
+
+    - name: Check KernelSU-Next SUSFS integration
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        KSU_DIR="${{ github.workspace }}/kernel/KernelSU-Next"
+
+        test -d "$KSU_DIR" || {
+          echo "::error::KernelSU-Next dizini bulunamadı."
+          exit 1
+        }
+
+        if grep -Rqs \
+          --include='Kconfig' \
+          --include='*.c' \
+          --include='*.h' \
+          "KSU_SUSFS\|susfs_init" \
+          "$KSU_DIR/kernel"; then
+
+          echo "KernelSU-Next içerisinde SUSFS entegrasyonu mevcut."
+          echo "70 KSU safety patch doğrudan uygulanmayacak."
+        else
+          echo "::error::KernelSU-Next içerisinde SUSFS entegrasyonu bulunamadı."
+          echo "::error::70_ksu_safety patchi kullanılan KernelSU forkuna port edilmelidir."
+          exit 1
+        fi
+
+    - name: Prepare ZeroMount patch
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        PATCH_DIR="${SUPER_BUILDERS_DIR}/android14-6.1/KernelSU-Next/patches"
+        ORIGINAL_PATCH="${PATCH_DIR}/60_zeromount-android14-6.1.patch"
+        OUTPUT_PATCH="${RUNNER_TEMP}/60_zeromount-no-defconfig.patch"
+
+        test -f "$ORIGINAL_PATCH" || {
+          echo "::error::ZeroMount patch bulunamadı."
+          exit 1
+        }
+
+        # Bu repo kernel configlerini wild_gki.fragment üzerinden ekliyor.
+        # Bu nedenle patch içindeki gki_defconfig bölümü çıkarılıyor.
+        awk '
+          /^--- a\/arch\/arm64\/configs\/gki_defconfig/ {
+            skip = 1
+            next
+          }
+
+          skip && /^--- a\/fs\/Kconfig/ {
+            skip = 0
+          }
+
+          !skip {
+            print
+          }
+        ' "$ORIGINAL_PATCH" > "$OUTPUT_PATCH"
+
+        test -s "$OUTPUT_PATCH" || {
+          echo "::error::ZeroMount patch hazırlanamadı."
+          exit 1
+        }
+
+        echo "ZEROMOUNT_PATCH=$OUTPUT_PATCH" >> "$GITHUB_ENV"
+
+    - name: Apply ZeroMount patch
+      shell: bash
+      working-directory: ${{ github.workspace }}/kernel/common
+      run: |
+        set -euo pipefail
+
+        if [[ -f fs/zeromount.c ]] &&
+           grep -q "config ZEROMOUNT" fs/Kconfig; then
+          echo "ZeroMount zaten uygulanmış."
+          exit 0
+        fi
+
+        echo "Testing ZeroMount patch..."
+
+        if ! patch --dry-run --batch --forward -p1 < "$ZEROMOUNT_PATCH"; then
+          echo "::error::ZeroMount patch mevcut kernel ağacına uygulanamıyor."
+          echo "::error::Yukarıdaki FAILED hunk satırlarını inceleyin."
+          exit 1
+        fi
+
+        patch --batch --forward -p1 < "$ZEROMOUNT_PATCH"
+
+        test -f fs/zeromount.c || {
+          echo "::error::fs/zeromount.c oluşturulmadı."
+          exit 1
+        }
+
+        grep -q "config ZEROMOUNT" fs/Kconfig || {
+          echo "::error::CONFIG_ZEROMOUNT Kconfig girdisi bulunamadı."
+          exit 1
+        }
+
+        grep -q "zeromount.o" fs/Makefile || {
+          echo "::error::ZeroMount fs/Makefile girdisi bulunamadı."
+          exit 1
+        }
+
+    - name: Run SUSFS compatibility helper
+      shell: bash
+      working-directory: ${{ github.workspace }}/kernel/common
+      run: |
+        set -euo pipefail
+
+        HELPER="${SUPER_BUILDERS_DIR}/android14-6.1/build-helpers/fix-susfs-compat.sh"
+
+        test -f "$HELPER" || {
+          echo "::error::fix-susfs-compat.sh bulunamadı."
+          exit 1
+        }
+
+        chmod +x "$HELPER"
+
+        # Helper sürümüne göre argüman kullanımı değişebileceğinden,
+        # önce parametreli, başarısız olursa kernel ağacından çalıştırıyoruz.
+        if ! "$HELPER" \
+          "${{ github.workspace }}/kernel/common" \
+          "${{ inputs.sublevel }}"; then
+          bash "$HELPER"
+        fi
+
+    - name: Enable ZeroMount configs
+      uses: ./.github/actions/set-kernel-config
+      with:
+        config_list: |
+          CONFIG_ZEROMOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT_REDIRECT=y
+          CONFIG_KSU_SUSFS_UNICODE_FILTER=y
+
+    - name: Validate ZeroMount source
+      shell: bash
+      working-directory: ${{ github.workspace }}/kernel/common
+      run: |
+        set -euo pipefail
+
+        echo "Validating ZeroMount integration..."
+
+        test -f fs/zeromount.c
+        grep -q "config ZEROMOUNT" fs/Kconfig
+        grep -q "zeromount.o" fs/Makefile
+
+        git status --short
+
+        echo "ZeroMount patch integration completed."
