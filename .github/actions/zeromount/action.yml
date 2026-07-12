@@ -51,20 +51,57 @@ runs:
       run: |
         set -euo pipefail
 
-        test -f fs/susfs.c || {
-          echo "::error::fs/susfs.c bulunamadı. SUSFS adımı ZeroMount'tan önce çalışmalıdır."
+        KERNEL_DIR="${{ github.workspace }}/kernel/common"
+        KSU_DIR="${{ github.workspace }}/kernel/KernelSU-Next"
+        KSU_KCONFIG="${KSU_DIR}/kernel/Kconfig"
+
+        echo "Checking SUSFS source integration..."
+
+        test -f "${KERNEL_DIR}/fs/susfs.c" || {
+          echo "::error::fs/susfs.c bulunamadı."
+          echo "::error::SUSFS action, ZeroMount action'dan önce çalışmalıdır."
           exit 1
         }
 
-        test -f include/linux/susfs.h || {
+        test -f "${KERNEL_DIR}/include/linux/susfs.h" || {
           echo "::error::include/linux/susfs.h bulunamadı."
           exit 1
         }
 
-        grep -q "config KSU_SUSFS" fs/Kconfig || {
-          echo "::error::SUSFS Kconfig entegrasyonu bulunamadı."
+        grep -Eq \
+          'obj-\$\(CONFIG_KSU_SUSFS\)[[:space:]]*\+=[[:space:]]*susfs\.o' \
+          "${KERNEL_DIR}/fs/Makefile" || {
+            echo "::error::fs/Makefile içerisinde SUSFS derleme girdisi bulunamadı."
+            exit 1
+          }
+
+        test -d "$KSU_DIR" || {
+          echo "::error::KernelSU-Next dizini bulunamadı: $KSU_DIR"
           exit 1
         }
+
+        test -f "$KSU_KCONFIG" || {
+          echo "::error::KernelSU-Next Kconfig bulunamadı: $KSU_KCONFIG"
+          exit 1
+        }
+
+        grep -Eq \
+          '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' \
+          "$KSU_KCONFIG" || {
+            echo "::error::KernelSU-Next Kconfig içerisinde KSU_SUSFS tanımı bulunamadı."
+            exit 1
+          }
+
+        grep -Eq \
+          '^[[:space:]]*config[[:space:]]+KSU_SUSFS_SUS_KSTAT([[:space:]]|$)' \
+          "$KSU_KCONFIG" || {
+            echo "::error::KSU_SUSFS_SUS_KSTAT desteği bulunamadı."
+            exit 1
+          }
+
+        echo "SUSFS source files: OK"
+        echo "SUSFS fs/Makefile integration: OK"
+        echo "KernelSU-Next SUSFS Kconfig: OK"
 
     - name: Apply Enhanced SUSFS patch
       shell: bash
