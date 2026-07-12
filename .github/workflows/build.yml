@@ -134,7 +134,8 @@ jobs:
       if: contains(inputs.feature_set, 'KSUN') || inputs.feature_set == 'FULL'
       uses: ./.github/actions/kernelsu
       with:
-        ksu_branch: ${{ inputs.ksu_branch }}
+          ksu_ref: 095f780bf8835e92b51d06fce4afe7733f86a64c
+          apply_static_patch: "false"
 
     - name: SUSFS
       if: contains(inputs.feature_set, 'SUSFS') || inputs.feature_set == 'FULL'
